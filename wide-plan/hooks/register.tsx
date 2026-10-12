@@ -28,17 +28,17 @@ export const register: Register = on => {
     }
 
     await $.command.register({
-      name: 'plan-view',
+      name: 'wide-plan',
       description: 'Show the current plan in a wide pane',
     })
 
     return next(e)
   })
 
-  on('command.run', { command: 'plan-view' }, async $ => {
-    const path = await read($, planPath)
+  on('command.run', { command: 'wide-plan' }, async $ => {
+    const path = await shownPlan($)
 
-    if (path === null || !(await $.fs.exists(path))) {
+    if (path === undefined) {
       return { text: 'No plan has been written in plan mode in this session.' }
     }
 
@@ -47,22 +47,23 @@ export const register: Register = on => {
     return { text: 'Plan pane opened.' }
   })
 
+  // The pane never opens by itself (the built-in plan view already shows the plan); the row button and /wide-plan open it
   on('tool.call', async ($, e, next) => {
     const path = await read($, planPath)
 
     // Right before approval, re-read the file so edits made elsewhere show up
     if (e.tool === 'ExitPlanMode') {
       if (path !== null && (await $.fs.exists(path))) {
-        await show($, path)
+        await load($, path)
       }
 
       const exited = await next(e)
       const filePath = (exited.result as { filePath?: unknown } | undefined)?.filePath
 
-      // No path from the notice: show the plan file named by the tool result
+      // No path from the notice: remember the plan file named by the tool result
       if (path === null && typeof filePath === 'string') {
         await update($, planPath, () => filePath)
-        await show($, filePath)
+        await load($, filePath)
       }
 
       return exited
@@ -72,10 +73,29 @@ export const register: Register = on => {
     const isPlanWrite = (e.tool === 'Write' || e.tool === 'Edit') && path !== null && isSamePath(e.file_path, path)
 
     if (isPlanWrite && ran.deny === undefined && ran.isError !== true) {
-      await show($, e.file_path)
+      await load($, e.file_path)
     }
 
     return ran
+  })
+
+  // The button sits on the plan's own row in the transcript, where it covers nothing
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    const path = e.props.tool === 'ExitPlanMode' ? await shownPlan($) : undefined
+
+    if (path === undefined) {
+      return next(e)
+    }
+
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const name = path.replace(/\\/g, '/').split('/').pop()
+
+    return (
+      <Box flexDirection="row" gap={1}>
+        <Text dimColor>Plan 쨌 {name}</Text>
+        <Button key="open" label="Wide plan" onPress={() => show($, path)} />
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -107,6 +127,13 @@ async function remember(
   }
 
   return next(e)
+}
+
+// The plan file a button would open, if one exists
+async function shownPlan($: EngineInterface): Promise<string | undefined> {
+  const path = (await read($, planPath)) ?? lastExitedPlan(await $.session.messages())
+
+  return path !== undefined && (await $.fs.exists(path)) ? path : undefined
 }
 
 function isSamePath(a: string, b: string): boolean {

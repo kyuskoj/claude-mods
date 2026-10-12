@@ -51,10 +51,11 @@ test('follows the plan file named by plan mode only', async ($, on) => {
   expect(opened).toEqual([])
 
   await $.tool.call({ tool: 'Write', file_path: PLAN_PATH.toLowerCase(), content: '# Title' })
-  expect(opened).toEqual(['plan'])
+  expect(opened).toEqual([])
+  expect(reads[reads.length - 1]).toBe(PLAN_PATH.toLowerCase())
 
   await $.tool.call({ tool: 'ExitPlanMode' })
-  expect(opened).toEqual(['plan', 'plan'])
+  expect(opened).toEqual([])
   expect(reads[reads.length - 1]).toBe(PLAN_PATH)
 
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -75,7 +76,33 @@ test('reads the path from the text when the row has no detail', async ($, on) =>
   })
   await $.tool.call({ tool: 'Write', file_path: PLAN_PATH, content: 'x' })
 
-  expect(opened).toEqual(['plan'])
+  expect(opened).toEqual([])
+})
+
+test('puts the open button on the ExitPlanMode row only', async ($, on) => {
+  world(on, [], [])
+  // Stands for the engine's own row
+  on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: 'engine row' }))
+  await enterPlanMode($)
+
+  const row = (tool: string) => ({
+    tool_use_id: 'toolu_1',
+    tool,
+    input: {},
+    isRunning: false,
+    isErrored: false,
+    isInterrupted: false,
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const plan = await $.ui.mount({ plugin: 'wide-plan', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('ExitPlanMode') })
+    expect(await plan.find({ type: 'Button' })).toBeDefined()
+    await plan.unmount()
+
+    const other = await $.ui.mount({ plugin: 'wide-plan', surface, component: 'ToolUse', requestId: 'toolu_1', props: row('Write') })
+    expect(await other.find({ type: 'Button' })).toBeUndefined()
+    await other.unmount()
+  }
 })
 
 test('stays closed when the write fails', async ($, on) => {
