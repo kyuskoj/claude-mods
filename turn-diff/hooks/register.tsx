@@ -14,6 +14,7 @@ const SUMMARY_HUNKS = 300
 
 const history = atom({ plugin: 'turn-diff', key: 'history' } as const, [])
 const expanded = atom({ plugin: 'turn-diff', key: 'expanded' } as const, [])
+const openTurn = atom({ plugin: 'turn-diff', key: 'openTurn' } as const, null)
 
 export const register: Register = on => {
   // Content just before the first touch this turn; null for a new file
@@ -74,6 +75,8 @@ export const register: Register = on => {
 
           return [...list, { id: e.turnId, no, at, request, answer, files: changed }].slice(-MAX_TURNS)
         })
+        // The new turn opens, folding whichever was open
+        await update($, openTurn, () => e.turnId)
         void $.ui.open({ id: PANE, title: 'Changes', columns: 100 })
         // Not awaited, so the summary never holds up the turn; the request shows until it arrives
         void summarize($, turns[turns.length - 1]!)
@@ -83,21 +86,30 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The row module (row.tsx) sends the pressed row's toggle key
+  // The row module (row.tsx) sends the pressed row's toggle key: a turn id or a `turnId:path` file key
   on('ui.message', async ($, e, next) => {
     const toggle = (e.data as { toggle?: unknown } | null)?.toggle
 
     if (e.requestId === PANE && typeof toggle === 'string') {
-      await update($, expanded, keys => (keys.includes(toggle) ? keys.filter(one => one !== toggle) : [...keys, toggle]))
+      const list = await read($, history)
+
+      if (list.some(turn => turn.id === toggle)) {
+        // One turn open at a time: pressing another switches to it, pressing the open one folds it
+        const shown = shownTurn(list, await read($, openTurn))
+        await update($, openTurn, () => (toggle === shown ? false : toggle))
+      } else {
+        await update($, expanded, keys => (keys.includes(toggle) ? keys.filter(one => one !== toggle) : [...keys, toggle]))
+      }
     }
 
     return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Client, Code } = $.ui.resolve(e)
+    const { Box, Text, Client, Code, Button } = $.ui.resolve(e)
     const list = await read($, history)
     const open = await read($, expanded)
+    const shown = shownTurn(list, await read($, openTurn))
 
     if (list.length === 0) {
       return <Text dimColor>No changes recorded yet.</Text>
@@ -106,11 +118,20 @@ export const register: Register = on => {
     const fileRow = (turn: Turn, file: TurnFile, index: number) => {
       const key = `${turn.id}:${file.path}`
       const isOpen = open.includes(key)
-      const row = { toggle: key, isOpen, label: file.label, added: file.added, removed: file.removed }
+      // The label alone goes in the row module, so the open button beside it is no part of the row's click area
+      const row = { toggle: key, isOpen, label: file.label }
 
       return (
         <Box flexDirection="column">
-          <Client key={`f-${turn.no}-${index}`} module="./row.tsx" props={row} width="100%" />
+          <Box justifyContent="space-between">
+            <Box gap={1}>
+              <Client key={`f-${turn.no}-${index}`} module="./row.tsx" props={row} />
+              <Button key={`open-${turn.no}-${index}`} label="↗" plain dimColor onPress={() => openDefault($, file.path)} />
+            </Box>
+            <Text>
+              <Text color="diffAdded">+{file.added}</Text> <Text color="diffRemoved">-{file.removed}</Text>
+            </Text>
+          </Box>
           {isOpen && (
             <Box marginLeft={2}>
               <Code source={file.hunks} format="diff" path={file.path} wrap="truncate-end" />
@@ -124,8 +145,7 @@ export const register: Register = on => {
       <Box flexDirection="column" gap={1}>
         {list.map((turn, index) => {
           const isLatest = index === list.length - 1
-          // Latest turn defaults to open, older ones to folded; being in expanded flips the default
-          const isOpen = isLatest !== open.includes(turn.id)
+          const isOpen = turn.id === shown
           const header = {
             toggle: turn.id,
             isOpen,
@@ -179,6 +199,36 @@ async function summarize($: EngineInterface, turn: Turn): Promise<void> {
 
   if (summary) {
     await update($, history, list => list.map(one => (one.id === turn.id ? { ...one, summary } : one)))
+  }
+}
+
+// The one open turn: none once the person folded it, the latest before they picked one
+function shownTurn(list: readonly Turn[], chosen: string | false | null): string | undefined {
+  if (chosen === false) {
+    return undefined
+  }
+
+  return chosen ?? list[list.length - 1]?.id
+}
+
+// Opens the file with the program the OS associates with it; no plugin API does this, so ask the OS shell
+async function openDefault($: EngineInterface, path: string): Promise<void> {
+  if (!(await $.fs.exists(path))) {
+    $.ui.toast(`turn-diff: ${path} no longer exists`)
+    return
+  }
+
+  if ((await $.env.get('OS')) === 'Windows_NT') {
+    // explorer exits 1 even when it opened the file, so its exit code says nothing
+    await $.process.run(['explorer', path.replace(/\//g, '\\')])
+    return
+  }
+
+  const uname = await $.process.run(['uname'])
+  const run = await $.process.run([uname.stdout.trim() === 'Darwin' ? 'open' : 'xdg-open', path])
+
+  if (run.exitCode !== 0) {
+    $.ui.toast(`turn-diff: could not open ${path}`)
   }
 }
 

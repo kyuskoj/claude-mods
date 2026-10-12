@@ -9,8 +9,9 @@ type FoldRow = {
   note?: string
   /** When set, a dimmed `N files` goes before the counts. */
   files?: number
-  added: number
-  removed: number
+  /** Without counts the row draws its label alone; a file row draws its counts outside, past its open button. */
+  added?: number
+  removed?: number
   isBold?: boolean
 }
 
@@ -35,10 +36,12 @@ const Row: ClientModule<FoldRow> = (row, surface) => {
         {row.isOpen ? '▾' : '▸'} {row.label}
         {row.note !== undefined && <Text dimColor> · {row.note}</Text>}
       </Text>
-      <Text>
-        {row.files !== undefined && <Text dimColor>{row.files} files </Text>}
-        <Text color="diffAdded">+{row.added}</Text> <Text color="diffRemoved">-{row.removed}</Text>
-      </Text>
+      {row.added !== undefined && (
+        <Text>
+          {row.files !== undefined && <Text dimColor>{row.files} files </Text>}
+          <Text color="diffAdded">+{row.added}</Text> <Text color="diffRemoved">-{row.removed}</Text>
+        </Text>
+      )}
     </Box>
   )
 }

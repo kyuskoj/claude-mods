@@ -28,7 +28,10 @@ export type Turn = {
 
 declare module 'claude-code' {
   interface PluginState {
-    /** Oldest turn first. `expanded` holds turn ids whose default fold state is flipped and opened `turnId:path` keys. */
-    'turn-diff': { history: Turn[]; expanded: string[] }
+    /**
+     * Oldest turn first. `expanded` holds opened `turnId:path` file keys.
+     * `openTurn` is the one unfolded turn: its id, `false` once the person folded it, `null` (the latest) before any pick.
+     */
+    'turn-diff': { history: Turn[]; expanded: string[]; openTurn: string | false | null }
   }
 }
