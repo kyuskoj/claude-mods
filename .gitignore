@@ -1,2 +1,2 @@
-# 엔진이 로드할 때마다 새로 쓰는 타입 파일
+# Rewritten by the engine on every load
 **/.claude-plugin/types/

@@ -1,9 +1,9 @@
-/** 패널에 띄운 플랜 파일. */
+/** The plan file shown in the panel. */
 export type Plan = { path: string; text: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    /** `path`는 계획 모드 알림이 알려 준 이 세션의 플랜 파일 경로다. */
+    /** `path` is the session plan file reported by the plan-mode notice. */
     'wide-plan': { shown: Plan | null; path: string | null }
   }
 }

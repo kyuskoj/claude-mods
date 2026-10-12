@@ -1,30 +1,34 @@
-/** 한 턴에서 바뀐 파일 하나의 요약과 diff. */
+/** One file changed in a turn, with its diff. */
 export type TurnFile = {
-  /** 도구가 받은 절대 경로. */
+  /** Absolute path as the tool received it. */
   path: string
-  /** 화면에 그리는 짧은 경로: 세션 폴더 기준 상대 경로, 밖이면 상위 폴더와 파일명. */
+  /** Short path shown on screen: relative to the session folder, else parent folder and file name. */
   label: string
   added: number
   removed: number
-  /** `@@`부터 시작하는 unified diff 헝크. */
+  /** Unified diff hunks, starting at `@@`. */
   hunks: string
 }
 
-/** 파일을 바꾼 턴 하나. */
+/** One turn that changed files. */
 export type Turn = {
   id: string
-  /** 화면에 그리는 턴 번호. 오래된 턴을 버려도 바뀌지 않는다. */
+  /** Turn number shown on screen; stable when old turns are dropped. */
   no: number
-  /** 턴이 끝난 시각, `HH:MM`. */
+  /** Time the turn ended, `HH:MM`. */
   at: string
-  /** 모델이 쓴 한 줄 요약. 오기 전이나 실패하면 없다. */
+  /** First line of the user request that started the turn. Sets the summary language and is the title until a summary exists. */
+  request?: string
+  /** Head of the assistant's final message; the main input to the summary. Absent when the turn ended without text. */
+  answer?: string
+  /** One-line model summary. Absent until it arrives or if it fails. */
   summary?: string
   files: TurnFile[]
 }
 
 declare module 'claude-code' {
   interface PluginState {
-    /** 오래된 턴이 맨 앞이다. `expanded`는 기본 상태에서 뒤집은 턴 id와 펼친 `턴id:경로` 키를 담는다. */
+    /** Oldest turn first. `expanded` holds turn ids whose default fold state is flipped and opened `turnId:path` keys. */
     'turn-diff': { history: Turn[]; expanded: string[] }
   }
 }

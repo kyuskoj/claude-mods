@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptAttachmentInput, PromptAttachmentResult, Register, SessionMessage } from 'claude-code'
 
 const PANE = 'plan'
-// 엔진이 detail을 주지 않는 행(호스트 고유 플랜 안내 등)에서는 본문에 적힌 경로를 쓴다
+// Rows without a detail (host-specific plan notices) fall back to the path in the body
 const PLAN_PATH_IN_TEXT = /(?:[A-Za-z]:[\\/]|\/)[^\s`'"]*?\.claude[\\/]plans[\\/][^\s`'"\\/]+\.md/
 
 const plan = atom({ plugin: 'wide-plan', key: 'shown' } as const, null)
@@ -14,8 +14,8 @@ export const register: Register = on => {
   on('prompt.attachment', { type: 'plan_mode_exit' }, remember)
 
   on('session.start', async ($, e, next) => {
-    // mod가 계획 모드 뒤에 로드되면 알림을 놓치므로, 마지막 ExitPlanMode 결과에서 경로를 되찾는다.
-    // 아래 등록이 실패하면 훅 전체가 건너뛰어지므로 복구를 먼저 한다
+    // A mod loaded after plan mode misses the notice, so recover the path from the last ExitPlanMode result.
+    // Do this before the registration below: if that fails the whole hook is skipped
     if ((await read($, planPath)) === null) {
       const path = lastExitedPlan(await $.session.messages())
 
@@ -50,7 +50,7 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const path = await read($, planPath)
 
-    // 승인 직전에는 다른 경로로 고쳐진 내용까지 다시 읽어 띄운다
+    // Right before approval, re-read the file so edits made elsewhere show up
     if (e.tool === 'ExitPlanMode') {
       if (path !== null && (await $.fs.exists(path))) {
         await show($, path)
@@ -59,7 +59,7 @@ export const register: Register = on => {
       const exited = await next(e)
       const filePath = (exited.result as { filePath?: unknown } | undefined)?.filePath
 
-      // 알림에서 경로를 못 받았으면 도구 결과가 알려 준 플랜 파일을 띄운다
+      // No path from the notice: show the plan file named by the tool result
       if (path === null && typeof filePath === 'string') {
         await update($, planPath, () => filePath)
         await show($, filePath)
@@ -81,7 +81,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Markdown, Text } = $.ui.resolve(e)
     const last = await read($, plan)
-    // 상태가 비어 있으면 그리는 자리에서 직접 찾는다. 그리는 중에는 상태를 쓸 수 없으므로 읽기만 한다
+    // With empty state, look it up while drawing (read-only; state cannot be written during a draw)
     const path = last === null ? ((await read($, planPath)) ?? lastExitedPlan(await $.session.messages())) : undefined
     const text = last?.text ?? (path !== undefined && (await $.fs.exists(path)) ? (await $.fs.read(path)).replace(/\r/g, '') : null)
 
@@ -93,7 +93,7 @@ export const register: Register = on => {
   })
 }
 
-// 계획 모드 알림이 이 세션의 플랜 파일 경로를 알려 준다
+// The plan-mode notice reports this session's plan file path
 async function remember(
   $: EngineInterface,
   e: PromptAttachmentInput,
@@ -122,7 +122,7 @@ function lastExitedPlan(messages: readonly SessionMessage[]): string | undefined
         continue
       }
 
-      // 데스크톱 같은 헤드리스 호스트는 도구 기록을 줄여 저장하므로 결과 글에서도 찾는다
+      // Headless hosts such as desktop store trimmed tool records, so also search the result text
       const filePath = (use.result as { filePath?: unknown } | undefined)?.filePath
       const path = typeof filePath === 'string' ? filePath : use.text?.match(PLAN_PATH_IN_TEXT)?.[0]
 

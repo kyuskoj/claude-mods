@@ -1,13 +1,13 @@
 import type { ClientModule } from 'claude-code'
 
-/** 접고 펴는 한 행. 행 어디를 눌러도 훅 모듈에 `toggle`을 보낸다. */
+/** A foldable row. Pressing anywhere on it sends `toggle` to the hooks module. */
 type FoldRow = {
   toggle: string
   isOpen: boolean
   label: string
-  /** 레이블 뒤에 흐리게 붙는 글: 턴의 시각. */
+  /** Dimmed text after the label: the turn time. */
   note?: string
-  /** 있으면 수치 앞에 `N files`를 흐리게 붙인다. */
+  /** When set, a dimmed `N files` goes before the counts. */
   files?: number
   added: number
   removed: number

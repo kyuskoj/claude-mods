@@ -4,24 +4,28 @@ import type { EngineInterface, Register, ToolCallInput } from 'claude-code'
 import type { Turn, TurnFile } from '../types'
 
 const PANE = 'turn-diff'
-// Code 한 번에 그릴 수 있는 10만 자 안에 여러 파일이 펼쳐져도 들어가도록 파일당 상한을 둔다
+// Per-file cap so several expanded files fit in the 100k chars Code can draw at once
 const MAX_HUNKS = 30000
-// 턴마다 diff 전문을 들고 있으므로 오래된 턴은 버린다
+// Every turn keeps its full diff, so drop old turns
 const MAX_TURNS = 10
-const SUMMARY_INPUT = 6000
+// The summary prompt gets the head of the final message, plus a short diff head per file when there is none
+const SUMMARY_ANSWER = 500
+const SUMMARY_HUNKS = 300
 
 const history = atom({ plugin: 'turn-diff', key: 'history' } as const, [])
 const expanded = atom({ plugin: 'turn-diff', key: 'expanded' } as const, [])
 
 export const register: Register = on => {
-  // 이번 턴에 처음 건드리기 직전의 내용. null이면 새로 만든 파일이다
+  // Content just before the first touch this turn; null for a new file
   let before = new Map<string, string | null>()
+  // The request that started this turn; keeps the summary in the user's language
+  let request = ''
 
   on('session.start', async ($, e, next) => {
-    // 요약이 붙기 전에 기록된 턴은 로드될 때 마저 요약한다. 등록이 실패해도 돌도록 먼저 한다
+    // Summarize turns recorded before their summary arrived; first, so it runs even if registration fails
     for (const turn of await read($, history)) {
       if (turn.summary === undefined) {
-        void summarize($, turn.id, turn.files)
+        void summarize($, turn)
       }
     }
 
@@ -41,6 +45,7 @@ export const register: Register = on => {
 
   on('turn.start', ($, e, next) => {
     before = new Map()
+    request = e.text.trim().split('\n')[0]?.slice(0, 200) ?? ''
 
     return next(e)
   })
@@ -57,27 +62,28 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined && before.size > 0) {
+      const answer = e.answer.trim().slice(0, SUMMARY_ANSWER) || undefined
       const touched = before
       before = new Map()
       const changed = await diffAll($, touched)
 
       if (changed.length > 0) {
         const at = new Date(await $.clock.now()).toTimeString().slice(0, 5)
-        await update($, history, list => {
+        const turns = await update($, history, list => {
           const no = (list[list.length - 1]?.no ?? 0) + 1
 
-          return [...list, { id: e.turnId, no, at, files: changed }].slice(-MAX_TURNS)
+          return [...list, { id: e.turnId, no, at, request, answer, files: changed }].slice(-MAX_TURNS)
         })
         void $.ui.open({ id: PANE, title: 'Changes', columns: 100 })
-        // 요약은 턴 종료를 붙잡지 않도록 기다리지 않는다. 오기 전에는 파일 이름이 대신 보인다
-        void summarize($, e.turnId, changed)
+        // Not awaited, so the summary never holds up the turn; the request shows until it arrives
+        void summarize($, turns[turns.length - 1]!)
       }
     }
 
     return next(e)
   })
 
-  // 행 모듈(row.tsx)이 눌린 행의 toggle 키를 보낸다
+  // The row module (row.tsx) sends the pressed row's toggle key
   on('ui.message', async ($, e, next) => {
     const toggle = (e.data as { toggle?: unknown } | null)?.toggle
 
@@ -118,12 +124,12 @@ export const register: Register = on => {
       <Box flexDirection="column" gap={1}>
         {list.map((turn, index) => {
           const isLatest = index === list.length - 1
-          // 최신 턴은 펼친 상태가, 이전 턴은 접힌 상태가 기본이다. expanded에 있으면 기본을 뒤집는다
+          // Latest turn defaults to open, older ones to folded; being in expanded flips the default
           const isOpen = isLatest !== open.includes(turn.id)
           const header = {
             toggle: turn.id,
             isOpen,
-            label: turn.summary ?? `파일 ${turn.files.length}개 변경`,
+            label: turn.summary || turn.request || '…',
             note: turn.at,
             files: turn.files.length,
             added: turn.files.reduce((sum, file) => sum + file.added, 0),
@@ -147,18 +153,19 @@ export const register: Register = on => {
   })
 }
 
-async function summarize($: EngineInterface, turnId: string, changed: TurnFile[]): Promise<void> {
-  // 큰 diff도 요약 한 줄이면 충분하므로 앞부분만 보낸다
-  const diff = changed
-    .map(file => `${file.label} (+${file.added} -${file.removed})\n${file.hunks}`)
-    .join('\n')
-    .slice(0, SUMMARY_INPUT)
+async function summarize($: EngineInterface, turn: Turn): Promise<void> {
+  const files = turn.files.map(file => `${file.label} (+${file.added} -${file.removed})`).join('\n')
+  // Without a final message, fall back to the head of each diff
+  const context = turn.answer
+    ? `Assistant's final message:\n${turn.answer}`
+    : `Diff:\n${turn.files.map(file => file.hunks.slice(0, SUMMARY_HUNKS)).join('\n')}`
   const reply = await $.model.complete({
     model: 'haiku',
     system:
-      'Summarize what this code change does as one short Korean noun phrase, at most 30 characters. ' +
+      'Summarize what this code change does as one short noun phrase, at most 30 characters, ' +
+      'written in the same language as the user request. ' +
       'Describe the change in natural language. Never mention file names or paths. No period, no quotes.',
-    prompt: diff,
+    prompt: `User request:\n${turn.request ?? ''}\n\n${context}\n\nFiles:\n${files}`,
     maxTokens: 60,
     effort: 'low',
     timeoutMs: 15000,
@@ -171,7 +178,7 @@ async function summarize($: EngineInterface, turnId: string, changed: TurnFile[]
   const summary = reply.text.trim().split('\n')[0]?.slice(0, 60)
 
   if (summary) {
-    await update($, history, list => list.map(turn => (turn.id === turnId ? { ...turn, summary } : turn)))
+    await update($, history, list => list.map(one => (one.id === turn.id ? { ...one, summary } : one)))
   }
 }
 
@@ -205,7 +212,7 @@ async function diffAll($: EngineInterface, touched: Map<string, string | null>):
 
   for (const [path, text] of touched) {
     await $.fs.write(beforePath, text ?? '')
-    // 차이가 있으면 1, 없으면 0으로 끝난다. 그 밖은 실패다
+    // Exits 1 on a difference, 0 on none; anything else is a failure
     const run = await $.process.run(['git', 'diff', '--no-index', '--no-color', '--no-ext-diff', '-U3', beforePath, path])
 
     if (run.exitCode !== 1) {
