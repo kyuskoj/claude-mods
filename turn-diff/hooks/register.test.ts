@@ -74,7 +74,7 @@ async function editTurn($: Engine, turnId: string, path: string, answer = ''): P
   await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId, reason: 'answer' })
 }
 
-test('snapshots once per file and opens the pane with counts', async ($, on) => {
+test('snapshots once per file and records the turn with counts, leaving the pane closed', async ($, on) => {
   const reads: string[] = []
   const opened: string[] = []
   world(on, reads, opened)
@@ -82,7 +82,7 @@ test('snapshots once per file and opens the pane with counts', async ($, on) => 
   await editTurn($, 't1', 'D:\\Beak\\Assets\\a.cs')
 
   expect(reads).toEqual(['D:\\Beak\\Assets\\a.cs'])
-  expect(opened).toEqual(['turn-diff'])
+  expect(opened).toEqual([])
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'turn-diff', surface, component: 'Pane', requestId: 'turn-diff', props: PANE })
@@ -167,14 +167,15 @@ test('opens a changed file with the default app from the button beside its name'
 })
 
 test('ignores a turn without edits', async ($, on) => {
-  const opened: string[] = []
-  world(on, [], opened)
+  world(on, [], [])
 
   await $.turn.start({ text: 'go', turnId: 't3' })
   await $.tool.call({ tool: 'Bash', command: 'ls' })
   await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't3', reason: 'answer' })
 
-  expect(opened).toEqual([])
+  const ui = await $.ui.mount({ plugin: 'turn-diff', surface: 'desktop', component: 'Pane', requestId: 'turn-diff', props: PANE })
+  expect(await ui.find({ type: 'Text', text: /No changes recorded yet/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('summarizes from the request and final message without the diff', async ($, on) => {
@@ -211,7 +212,9 @@ test('leaves the plan-mode plan file out', async ($, on) => {
   await editTurn($, 't1', 'C:/Users/me/.claude/plans/bright-sketch.md')
   await editTurn($, 't2', 'C:\\Users\\me\\.claude\\plans\\bright-sketch.md')
 
-  expect(opened).toEqual([])
+  const ui = await $.ui.mount({ plugin: 'turn-diff', surface: 'desktop', component: 'Pane', requestId: 'turn-diff', props: PANE })
+  expect(await ui.find({ type: 'Text', text: /No changes recorded yet/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('shows an open button above the prompt only while the pane is closed', async ($, on) => {
@@ -230,12 +233,9 @@ test('shows an open button above the prompt only while the pane is closed', asyn
   expect(await empty.find({ key: 'open-changes' })).toBeUndefined()
   await empty.unmount()
 
-  // The turn opens the pane by itself, so the band stays hidden
+  // The turn leaves the pane closed; the band offers it
   await editTurn($, 't1', 'D:/Beak/a.cs')
-  expect(opened).toEqual(['turn-diff'])
-  const hidden = await mount('desktop')
-  expect(await hidden.find({ key: 'open-changes' })).toBeUndefined()
-  await hidden.unmount()
+  expect(opened).toEqual([])
 
   for (const surface of ['terminal', 'desktop'] as const) {
     closedAt = opened.length
@@ -309,9 +309,11 @@ test('still records the turn when the store fails', async ($, on) => {
       throw new Error('disk full')
     }
   }
-  world(on, [], opened, [], true, [], new FullStore())
+  world(on, [], [], [], true, [], new FullStore())
 
   await editTurn($, 't1', 'D:/Beak/a.cs')
 
-  expect(opened).toEqual(['turn-diff'])
+  const ui = await $.ui.mount({ plugin: 'turn-diff', surface: 'desktop', component: 'Pane', requestId: 'turn-diff', props: PANE })
+  expect(await ui.find({ type: 'Text', text: /a\.cs/, in: 'f-1-0' })).toBeDefined()
+  await ui.unmount()
 })

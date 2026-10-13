@@ -98,7 +98,6 @@ export const register: Register = on => {
         await save($, turns).catch(() => undefined)
         // The new turn opens, folding whichever was open
         await update($, openTurn, () => e.turnId)
-        void openPane($)
         // Not awaited, so the summary never holds up the turn; the request shows until it arrives
         void summarize($, turns[turns.length - 1]!)
       }
