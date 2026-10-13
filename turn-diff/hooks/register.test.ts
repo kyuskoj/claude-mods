@@ -180,3 +180,48 @@ test('falls back to the diff head when the turn has no final message', async ($,
   expect(prompts[0]).not.toContain("Assistant's final message")
   expect(prompts[0]).toContain('@@ -1,2 +1,3 @@')
 })
+
+test('leaves the plan-mode plan file out', async ($, on) => {
+  const opened: string[] = []
+  world(on, [], opened)
+
+  await editTurn($, 't1', 'C:/Users/me/.claude/plans/bright-sketch.md')
+  await editTurn($, 't2', 'C:\\Users\\me\\.claude\\plans\\bright-sketch.md')
+
+  expect(opened).toEqual([])
+})
+
+test('shows an open button above the prompt only while the pane is closed', async ($, on) => {
+  const opened: string[] = []
+  // The pane counts as up after an open since the person last closed it
+  let closedAt = 0
+  world(on, [], opened)
+  on('ui.panes', () => ({ value: opened.length > closedAt ? [{ id: 'turn-diff' }] : [] }) as never)
+  // Stands for the engine's own band
+  on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: '' }))
+  const band = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+  const mount = (surface: 'terminal' | 'desktop') =>
+    $.ui.mount({ plugin: 'turn-diff', surface, component: 'AbovePrompt', requestId: 'band', props: band as never })
+
+  const empty = await mount('desktop')
+  expect(await empty.find({ key: 'open-changes' })).toBeUndefined()
+  await empty.unmount()
+
+  // The turn opens the pane by itself, so the band stays hidden
+  await editTurn($, 't1', 'D:/Beak/a.cs')
+  expect(opened).toEqual(['turn-diff'])
+  const hidden = await mount('desktop')
+  expect(await hidden.find({ key: 'open-changes' })).toBeUndefined()
+  await hidden.unmount()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    closedAt = opened.length
+    const ui = await mount(surface)
+    expect(await ui.find({ type: 'Text', text: /1 files/ })).toBeDefined()
+
+    await ui.press({ key: 'open-changes' })
+    expect(opened[opened.length - 1]).toBe('turn-diff')
+    expect(await ui.find({ key: 'open-changes' })).toBeUndefined()
+    await ui.unmount()
+  }
+})

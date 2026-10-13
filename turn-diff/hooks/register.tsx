@@ -11,6 +11,8 @@ const MAX_TURNS = 10
 // The summary prompt gets the head of the final message, plus a short diff head per file when there is none
 const SUMMARY_ANSWER = 500
 const SUMMARY_HUNKS = 300
+// The plan-mode plan file is no project change; wide-plan shows it
+const PLAN_FILE = /[\\/]\.claude[\\/]plans[\\/][^\\/]+\.md$/i
 
 const history = atom({ plugin: 'turn-diff', key: 'history' } as const, [])
 const expanded = atom({ plugin: 'turn-diff', key: 'expanded' } as const, [])
@@ -39,9 +41,18 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'turn-diff' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Changes', columns: 100 })
+    await openPane($)
 
     return { text: 'Changes pane opened.' }
+  })
+
+  // The band asks the engine whether the pane is up; a close only asks it to look again
+  on('ui.close', async ($, e, next) => {
+    await next(e)
+
+    if (e.id === PANE) {
+      $.ui.invalidate('ui.render')
+    }
   })
 
   on('turn.start', ($, e, next) => {
@@ -77,7 +88,7 @@ export const register: Register = on => {
         })
         // The new turn opens, folding whichever was open
         await update($, openTurn, () => e.turnId)
-        void $.ui.open({ id: PANE, title: 'Changes', columns: 100 })
+        void openPane($)
         // Not awaited, so the summary never holds up the turn; the request shows until it arrives
         void summarize($, turns[turns.length - 1]!)
       }
@@ -103,6 +114,44 @@ export const register: Register = on => {
     }
 
     return next(e)
+  })
+
+  // One press away from the pane while it is closed. Whatever the hooks beneath draw (wide-plan's button)
+  // goes on the same row, so the band stays one line whichever plugin runs first
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) {
+      return next(e)
+    }
+
+    const below = await next(e)
+    const list = await read($, history)
+    const latest = list[list.length - 1]
+    // Whether the pane is up now, from the engine's own list
+    const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
+
+    if (latest === undefined || isOpen) {
+      return below
+    }
+
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const totals = sum(latest.files)
+
+    return (
+      <Box gap={3}>
+        <Box gap={1} flexShrink={1}>
+          <Text dimColor wrap="truncate-end">
+            Changes · {latest.summary || latest.request || '…'} · {latest.files.length} files
+          </Text>
+          <Box gap={1} flexShrink={0}>
+            <Text>
+              <Text color="diffAdded">+{totals.added}</Text> <Text color="diffRemoved">-{totals.removed}</Text>
+            </Text>
+            <Button key="open-changes" label="Open" onPress={() => openPane($)} />
+          </Box>
+        </Box>
+        {below}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -152,8 +201,7 @@ export const register: Register = on => {
             label: turn.summary || turn.request || '…',
             note: turn.at,
             files: turn.files.length,
-            added: turn.files.reduce((sum, file) => sum + file.added, 0),
-            removed: turn.files.reduce((sum, file) => sum + file.removed, 0),
+            ...sum(turn.files),
             isBold: true,
           }
 
@@ -171,6 +219,19 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+// The band hides its button once the pane is up
+async function openPane($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: PANE, title: 'Changes', columns: 100 })
+  $.ui.invalidate('ui.render')
+}
+
+function sum(files: readonly TurnFile[]): { added: number; removed: number } {
+  return {
+    added: files.reduce((total, file) => total + file.added, 0),
+    removed: files.reduce((total, file) => total + file.removed, 0),
+  }
 }
 
 async function summarize($: EngineInterface, turn: Turn): Promise<void> {
@@ -234,7 +295,7 @@ async function openDefault($: EngineInterface, path: string): Promise<void> {
 
 function editedPath(e: ToolCallInput): string | undefined {
   if (e.tool === 'Edit' || e.tool === 'Write') {
-    return e.file_path
+    return PLAN_FILE.test(e.file_path) ? undefined : e.file_path
   }
 
   if (e.tool === 'NotebookEdit') {
