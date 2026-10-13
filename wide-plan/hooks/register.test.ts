@@ -12,13 +12,13 @@ const PANE = {
   view: {},
 } as const
 
-function world(on: On, opened: string[], reads: string[], isDenied = false): void {
+function world(on: On, opened: string[], reads: string[], isDenied = false, exists = (path: string) => path !== ''): void {
   on('fs.read', ($, e) => {
     reads.push(e.path)
 
     return { value: '# Title\r\n\r\nBody\r\n' }
   })
-  on('fs.exists', () => ({ value: true }))
+  on('fs.exists', ($, e) => ({ value: exists(e.path) }))
   on('ui.open', ($, e) => {
     opened.push(e.id)
 
@@ -136,6 +136,80 @@ test('recovers the plan from the result text of the last ExitPlanMode', async ($
   const ui = await $.ui.mount({ plugin: 'wide-plan', surface: 'desktop', component: 'Pane', requestId: 'plan', props: PANE })
   expect(await ui.find({ type: 'Markdown' })).toBeDefined()
   await ui.unmount()
+})
+
+test("ignores a subagent's plan-mode notice and calls", async ($, on) => {
+  const opened: string[] = []
+  const reads: string[] = []
+  world(on, opened, reads)
+  on('session.messages', () => ({ value: [] }) as never)
+
+  await enterPlanMode($)
+  // A Plan subagent is told about a file of its own
+  await $.prompt.attachment({
+    type: 'plan_mode',
+    text: 'Plan mode is active.',
+    origin: { kind: 'engine' },
+    agentId: 'a9611c6943fcdbe4b',
+    detail: { reminder: 'full', planFilePath: OTHER_PLAN, hasPlan: false },
+  })
+  await $.tool.call({ tool: 'ExitPlanMode', agentId: 'a9611c6943fcdbe4b' } as never)
+  expect(reads).toEqual([])
+
+  const ran = await $.command.run({ command: 'wide-plan', args: '' } as never)
+
+  expect((ran as { text?: string }).text).toBe('Plan pane opened.')
+  expect(reads).toEqual([PLAN_PATH])
+})
+
+test('shows an open button above the prompt beside what is drawn beneath, while the pane is closed', async ($, on) => {
+  const opened: string[] = []
+  world(on, opened, [])
+  on('ui.panes', () => ({ value: opened.length > 0 ? [{ id: 'plan' }] : [] }) as never)
+  // Stands for turn-diff's button, drawn beneath
+  on('ui.render', ($, e) => {
+    const { Box, Button } = $.ui.resolve(e)
+
+    return Box({ children: [Button({ key: 'open-changes', label: 'Open', onPress: () => undefined })] })
+  })
+  const band = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+  const mount = (surface: 'terminal' | 'desktop') =>
+    $.ui.mount({ plugin: 'wide-plan', surface, component: 'AbovePrompt', requestId: 'band', props: band as never })
+
+  // No plan: only what is beneath
+  const empty = await mount('desktop')
+  expect(await empty.find({ key: 'open-plan' })).toBeUndefined()
+  expect(await empty.find({ key: 'open-changes' })).toBeDefined()
+  await empty.unmount()
+
+  await enterPlanMode($)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await mount(surface)
+    expect(await ui.find({ type: 'Text', text: /Plan · real-plan\.md/ })).toBeDefined()
+    expect(await ui.find({ key: 'open-changes' })).toBeDefined()
+    await ui.unmount()
+  }
+
+  const ui = await mount('desktop')
+  await ui.press({ key: 'open-plan' })
+  expect(opened).toEqual(['plan'])
+  expect(await ui.find({ key: 'open-plan' })).toBeUndefined()
+  expect(await ui.find({ key: 'open-changes' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('falls back to the transcript when the remembered file is missing', async ($, on) => {
+  const opened: string[] = []
+  world(on, opened, [], false, path => path === OTHER_PLAN)
+  on('session.messages', () => ({
+    value: [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Write', input: { file_path: OTHER_PLAN } }] }],
+  }) as never)
+
+  await enterPlanMode($)
+  const ran = await $.command.run({ command: 'wide-plan', args: '' } as never)
+
+  expect((ran as { text?: string }).text).toBe('Plan pane opened.')
 })
 
 test('finds the written plan when the notice was missed and ExitPlanMode was rejected', async ($, on) => {

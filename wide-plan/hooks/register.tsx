@@ -53,8 +53,22 @@ export const register: Register = on => {
     return { text: 'Plan pane opened.' }
   })
 
-  // The pane never opens by itself (the built-in plan view already shows the plan); the row button and /wide-plan open it
+  // The band asks the engine whether the pane is up; a close only asks it to look again
+  on('ui.close', async ($, e, next) => {
+    await next(e)
+
+    if (e.id === PANE) {
+      $.ui.invalidate('ui.render')
+    }
+  })
+
+  // The pane never opens by itself (the built-in plan view already shows the plan); the buttons and /wide-plan open it
   on('tool.call', async ($, e, next) => {
+    // A subagent's plan-mode calls work on its own plan file, not the session's
+    if (e.agentId !== undefined) {
+      return next(e)
+    }
+
     const path = await read($, planPath)
 
     // Right before approval, re-read the file so edits made elsewhere show up
@@ -94,12 +108,42 @@ export const register: Register = on => {
     }
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const name = path.replace(/\\/g, '/').split('/').pop()
 
     return (
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Plan · {name}</Text>
+        <Text dimColor>Plan · {fileName(path)}</Text>
         <Button key="open" label="Wide plan" onPress={() => show($, path)} />
+      </Box>
+    )
+  })
+
+  // One press away from the pane while it is closed. Whatever the hooks beneath draw (turn-diff's button)
+  // goes on the same row, so the band stays one line whichever plugin runs first
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) {
+      return next(e)
+    }
+
+    const below = await next(e)
+    // Read so a newly written plan redraws the band
+    await read($, plan)
+    // Whether the pane is up now, from the engine's own list
+    const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
+    const path = isOpen ? undefined : await shownPlan($)
+
+    if (path === undefined) {
+      return below
+    }
+
+    const { Box, Button, Text } = $.ui.resolve(e)
+
+    return (
+      <Box gap={3}>
+        <Box gap={1} flexShrink={0}>
+          <Text dimColor>Plan · {fileName(path)}</Text>
+          <Button key="open-plan" label="Open" onPress={() => show($, path)} />
+        </Box>
+        {below}
       </Box>
     )
   })
@@ -108,8 +152,8 @@ export const register: Register = on => {
     const { Markdown, Text } = $.ui.resolve(e)
     const last = await read($, plan)
     // With empty state, look it up while drawing (read-only; state cannot be written during a draw)
-    const path = last === null ? ((await read($, planPath)) ?? lastExitedPlan(await $.session.messages())) : undefined
-    const text = last?.text ?? (path !== undefined && (await $.fs.exists(path)) ? (await $.fs.read(path)).replace(/\r/g, '') : null)
+    const path = last === null ? await shownPlan($) : undefined
+    const text = last?.text ?? (path !== undefined ? (await $.fs.read(path)).replace(/\r/g, '') : null)
 
     if (text === null) {
       return <Text dimColor>No plan yet.</Text>
@@ -119,7 +163,8 @@ export const register: Register = on => {
   })
 }
 
-// The plan-mode notice reports this session's plan file path
+// The plan-mode notice of the main loop reports this session's plan file path.
+// A subagent in plan mode gets the same notice naming a file of its own, so its rows are skipped
 async function remember(
   $: EngineInterface,
   e: PromptAttachmentInput,
@@ -128,18 +173,29 @@ async function remember(
   const detail = e.detail as { planFilePath?: string } | undefined
   const path = detail?.planFilePath ?? e.text.match(PLAN_PATH_IN_TEXT)?.[0]
 
-  if (path !== undefined) {
+  if (e.agentId === undefined && path !== undefined) {
     await update($, planPath, () => path)
   }
 
   return next(e)
 }
 
-// The plan file a button would open, if one exists
+// The plan file a button would open, if one exists. The notice names the file before it is written,
+// so until then the transcript's last plan counts
 async function shownPlan($: EngineInterface): Promise<string | undefined> {
-  const path = (await read($, planPath)) ?? lastExitedPlan(await $.session.messages())
+  const remembered = await read($, planPath)
+
+  if (remembered !== null && (await $.fs.exists(remembered))) {
+    return remembered
+  }
+
+  const path = lastExitedPlan(await $.session.messages())
 
   return path !== undefined && (await $.fs.exists(path)) ? path : undefined
+}
+
+function fileName(path: string): string | undefined {
+  return path.replace(/\\/g, '/').split('/').pop()
 }
 
 function isSamePath(a: string, b: string): boolean {
@@ -149,7 +205,8 @@ function isSamePath(a: string, b: string): boolean {
 }
 
 // The plan-mode notice can be missed (desktop sends it with the first prompt) and a rejected
-// ExitPlanMode names no file, so the plan file's own writes count too
+// ExitPlanMode names no file, so the plan file's own writes count too. The main transcript holds
+// only the main loop's calls, so a subagent's plan never shows up here
 function lastExitedPlan(messages: readonly SessionMessage[]): string | undefined {
   for (const message of [...messages].reverse()) {
     for (const use of [...message.toolUses].reverse()) {
@@ -186,7 +243,9 @@ async function load($: EngineInterface, path: string): Promise<void> {
   await update($, plan, () => ({ path, text }))
 }
 
+// The band hides its button once the pane is up
 async function show($: EngineInterface, path: string): Promise<void> {
   await load($, path)
   await $.ui.open({ id: PANE, title: 'Plan', columns: 140 })
+  $.ui.invalidate('ui.render')
 }
