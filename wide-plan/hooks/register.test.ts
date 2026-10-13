@@ -137,3 +137,31 @@ test('recovers the plan from the result text of the last ExitPlanMode', async ($
   expect(await ui.find({ type: 'Markdown' })).toBeDefined()
   await ui.unmount()
 })
+
+test('finds the written plan when the notice was missed and ExitPlanMode was rejected', async ($, on) => {
+  const opened: string[] = []
+  world(on, opened, [])
+  on('session.messages', () => ({
+    value: [
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Write', input: { file_path: 'D:\\Beak\\notes.md' } }] },
+      {
+        role: 'assistant',
+        text: '',
+        toolUses: [
+          { tool_use_id: 'b', tool: 'Write', input: { file_path: PLAN_PATH }, text: `File created successfully at: ${PLAN_PATH}` },
+          { tool_use_id: 'c', tool: 'Edit', input: { file_path: OTHER_PLAN }, isError: true, text: 'failed' },
+        ],
+      },
+      {
+        role: 'assistant',
+        text: '',
+        toolUses: [{ tool_use_id: 'd', tool: 'ExitPlanMode', input: {}, isError: true, text: "The user doesn't want to proceed with this tool use." }],
+      },
+    ],
+  }) as never)
+
+  const ran = await $.command.run({ command: 'wide-plan', args: '' } as never)
+
+  expect((ran as { text?: string }).text).toBe('Plan pane opened.')
+  expect(opened).toEqual(['plan'])
+})

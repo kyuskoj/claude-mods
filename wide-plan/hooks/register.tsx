@@ -1,5 +1,12 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PromptAttachmentInput, PromptAttachmentResult, Register, SessionMessage } from 'claude-code'
+import type {
+  EngineInterface,
+  PromptAttachmentInput,
+  PromptAttachmentResult,
+  Register,
+  SessionMessage,
+  ToolUseSummary,
+} from 'claude-code'
 
 const PANE = 'plan'
 // Rows without a detail (host-specific plan notices) fall back to the path in the body
@@ -14,16 +21,15 @@ export const register: Register = on => {
   on('prompt.attachment', { type: 'plan_mode_exit' }, remember)
 
   on('session.start', async ($, e, next) => {
-    // A mod loaded after plan mode misses the notice, so recover the path from the last ExitPlanMode result.
-    // Do this before the registration below: if that fails the whole hook is skipped
+    // A mod loaded after plan mode misses the notice, so recover the path from the transcript.
+    // Do this before the registration below: if that fails the whole hook is skipped.
+    // Most sessions have no plan, so finding none stays silent
     if ((await read($, planPath)) === null) {
       const path = lastExitedPlan(await $.session.messages())
 
       if (path !== undefined && (await $.fs.exists(path))) {
         await update($, planPath, () => path)
         await load($, path)
-      } else {
-        $.ui.log(`wide-plan: no plan file found to show (${path ?? 'no ExitPlanMode result in this session'})`)
       }
     }
 
@@ -92,7 +98,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Plan 쨌 {name}</Text>
+        <Text dimColor>Plan · {name}</Text>
         <Button key="open" label="Wide plan" onPress={() => show($, path)} />
       </Box>
     )
@@ -142,16 +148,12 @@ function isSamePath(a: string, b: string): boolean {
   return normal(a) === normal(b)
 }
 
+// The plan-mode notice can be missed (desktop sends it with the first prompt) and a rejected
+// ExitPlanMode names no file, so the plan file's own writes count too
 function lastExitedPlan(messages: readonly SessionMessage[]): string | undefined {
   for (const message of [...messages].reverse()) {
-    for (const use of message.toolUses) {
-      if (use.tool !== 'ExitPlanMode') {
-        continue
-      }
-
-      // Headless hosts such as desktop store trimmed tool records, so also search the result text
-      const filePath = (use.result as { filePath?: unknown } | undefined)?.filePath
-      const path = typeof filePath === 'string' ? filePath : use.text?.match(PLAN_PATH_IN_TEXT)?.[0]
+    for (const use of [...message.toolUses].reverse()) {
+      const path = use.tool === 'ExitPlanMode' ? exitedPlan(use) : writtenPlan(use)
 
       if (path !== undefined) {
         return path
@@ -160,6 +162,23 @@ function lastExitedPlan(messages: readonly SessionMessage[]): string | undefined
   }
 
   return undefined
+}
+
+function exitedPlan(use: ToolUseSummary): string | undefined {
+  // Headless hosts such as desktop store trimmed tool records, so also search the result text
+  const filePath = (use.result as { filePath?: unknown } | undefined)?.filePath
+
+  return typeof filePath === 'string' ? filePath : use.text?.match(PLAN_PATH_IN_TEXT)?.[0]
+}
+
+function writtenPlan(use: ToolUseSummary): string | undefined {
+  const filePath = use.input.file_path
+
+  if ((use.tool !== 'Write' && use.tool !== 'Edit') || use.isError === true || typeof filePath !== 'string') {
+    return undefined
+  }
+
+  return PLAN_PATH_IN_TEXT.exec(filePath)?.[0] === filePath ? filePath : undefined
 }
 
 async function load($: EngineInterface, path: string): Promise<void> {
