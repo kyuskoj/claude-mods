@@ -6,6 +6,8 @@ export type TurnFile = {
   label: string
   added: number
   removed: number
+  /** Line count of the file right after the turn. Absent on turns recorded before it was kept. */
+  lines?: number
   /** Unified diff hunks, starting at `@@`. */
   hunks: string
 }

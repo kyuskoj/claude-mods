@@ -13,6 +13,9 @@ const SUMMARY_ANSWER = 500
 const SUMMARY_HUNKS = 300
 // The plan-mode plan file is no project change; wide-plan shows it
 const PLAN_FILE = /[\\/]\.claude[\\/]plans[\\/][^\\/]+\.md$/i
+// $.state is gone once the app quits, so the store keeps each session's turns under this prefix, for the latest sessions
+const SAVED = 'history:'
+const MAX_SESSIONS = 5
 
 const history = atom({ plugin: 'turn-diff', key: 'history' } as const, [])
 const expanded = atom({ plugin: 'turn-diff', key: 'expanded' } as const, [])
@@ -25,6 +28,8 @@ export const register: Register = on => {
   let request = ''
 
   on('session.start', async ($, e, next) => {
+    await restore($)
+
     // Summarize turns recorded before their summary arrived; first, so it runs even if registration fails
     for (const turn of await read($, history)) {
       if (turn.summary === undefined) {
@@ -41,6 +46,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'turn-diff' }, async $ => {
+    await restore($)
     await openPane($)
 
     return { text: 'Changes pane opened.' }
@@ -55,7 +61,9 @@ export const register: Register = on => {
     }
   })
 
-  on('turn.start', ($, e, next) => {
+  on('turn.start', async ($, e, next) => {
+    // Before this turn's card is saved over the store's copy
+    await restore($)
     before = new Map()
     request = e.text.trim().split('\n')[0]?.slice(0, 200) ?? ''
 
@@ -86,6 +94,8 @@ export const register: Register = on => {
 
           return [...list, { id: e.turnId, no, at, request, answer, files: changed }].slice(-MAX_TURNS)
         })
+        // A store that fails costs only the copy kept past a restart, never the card itself
+        await save($, turns).catch(() => undefined)
         // The new turn opens, folding whichever was open
         await update($, openTurn, () => e.turnId)
         void openPane($)
@@ -179,6 +189,7 @@ export const register: Register = on => {
             </Box>
             <Text>
               <Text color="diffAdded">+{file.added}</Text> <Text color="diffRemoved">-{file.removed}</Text>
+              {file.lines !== undefined && <Text dimColor> · {file.lines} lines</Text>}
             </Text>
           </Box>
           {isOpen && (
@@ -227,6 +238,49 @@ async function openPane($: EngineInterface): Promise<void> {
   $.ui.invalidate('ui.render')
 }
 
+// After the app restarts the session's turns are only in the store; a hot reload keeps them in $.state
+async function restore($: EngineInterface): Promise<void> {
+  if ((await read($, history)).length > 0) {
+    return
+  }
+
+  const saved = await $.session
+    .id()
+    .then(id => $.store.get(`${SAVED}${id}`))
+    .catch(() => undefined)
+
+  if (Array.isArray(saved) && saved.length > 0) {
+    await update($, history, list => (list.length === 0 ? (saved as Turn[]) : list))
+  }
+}
+
+async function save($: EngineInterface, turns: readonly Turn[]): Promise<void> {
+  const key = `${SAVED}${await $.session.id()}`
+  // Deleting first moves this session last in the store's insertion order, so the oldest sessions come first
+  await $.store.delete(key)
+  const older = (await $.store.keys()).filter(one => one.startsWith(SAVED))
+
+  for (const one of older.splice(0, Math.max(older.length - (MAX_SESSIONS - 1), 0))) {
+    await $.store.delete(one)
+  }
+
+  // The store holds 4 MiB in all; past that, older sessions go until this one fits
+  for (;;) {
+    try {
+      await $.store.set(key, turns)
+      return
+    } catch {
+      const oldest = older.shift()
+
+      if (oldest === undefined) {
+        return
+      }
+
+      await $.store.delete(oldest)
+    }
+  }
+}
+
 function sum(files: readonly TurnFile[]): { added: number; removed: number } {
   return {
     added: files.reduce((total, file) => total + file.added, 0),
@@ -259,7 +313,8 @@ async function summarize($: EngineInterface, turn: Turn): Promise<void> {
   const summary = reply.text.trim().split('\n')[0]?.slice(0, 60)
 
   if (summary) {
-    await update($, history, list => list.map(one => (one.id === turn.id ? { ...one, summary } : one)))
+    const turns = await update($, history, list => list.map(one => (one.id === turn.id ? { ...one, summary } : one)))
+    await save($, turns).catch(() => undefined)
   }
 }
 
@@ -315,6 +370,11 @@ function shortPath(path: string, cwd: string): string {
   return `…/${normal.split('/').slice(-2).join('/')}`
 }
 
+// Counts lines the way git does: a last line without a newline still counts
+function lineCount(text: string): number {
+  return text === '' ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
+}
+
 async function diffAll($: EngineInterface, touched: Map<string, string | null>): Promise<TurnFile[]> {
   const cwd = (await $.session.cwd()).replace(/\\/g, '/')
   const temp = (await $.env.get('TEMP')) ?? (await $.env.get('TMPDIR')) ?? '/tmp'
@@ -332,12 +392,16 @@ async function diffAll($: EngineInterface, touched: Map<string, string | null>):
 
     const hunks = run.stdout.replace(/\r/g, '').replace(/^[\s\S]*?(?=^@@)/m, '')
     const lines = hunks.split('\n')
+    const added = lines.filter(line => line.startsWith('+')).length
+    const removed = lines.filter(line => line.startsWith('-')).length
 
     changed.push({
       path,
       label: shortPath(path, cwd),
-      added: lines.filter(line => line.startsWith('+')).length,
-      removed: lines.filter(line => line.startsWith('-')).length,
+      added,
+      removed,
+      // From the snapshot and the diff, so the file is not read again
+      lines: lineCount(text ?? '') + added - removed,
       hunks: hunks.length > MAX_HUNKS ? hunks.slice(0, Math.max(hunks.lastIndexOf('\n@@', MAX_HUNKS), 0)) : hunks,
     })
   }

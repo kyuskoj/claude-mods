@@ -1,6 +1,6 @@
 {
   "name": "turn-diff",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "Shows what the agent changed in each turn as summarized cards with expandable per-file diffs.",
   "author": { "name": "Son" },
   "types": "./types/index.d.ts"

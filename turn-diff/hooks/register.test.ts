@@ -11,7 +11,15 @@ const PANE = {
   view: {},
 } as const
 
-function world(on: On, reads: string[], opened: string[], prompts: string[] = [], isAnswered = true, runs: string[][] = []): void {
+function world(
+  on: On,
+  reads: string[],
+  opened: string[],
+  prompts: string[] = [],
+  isAnswered = true,
+  runs: string[][] = [],
+  store = new Map<string, unknown>(),
+): void {
   on('fs.read', ($, e) => {
     reads.push(e.path)
 
@@ -27,6 +35,19 @@ function world(on: On, reads: string[], opened: string[], prompts: string[] = []
   on('env.get', ($, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : 'C:/temp' }))
   on('session.cwd', () => ({ value: 'D:\\Beak' }))
   on('clock.now', () => ({ value: 0 }))
+  on('session.id', () => ({ value: 's1' }))
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+
+    return { value: undefined }
+  })
+  on('store.delete', ($, e) => {
+    store.delete(e.key)
+
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...store.keys()] }))
   on('model.complete', ($, e) => {
     const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
     prompts.push(e.prompt)
@@ -132,6 +153,8 @@ test('opens a changed file with the default app from the button beside its name'
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'turn-diff', surface, component: 'Pane', requestId: 'turn-diff', props: PANE })
     expect(await ui.find({ type: 'Text', text: /\+2/ })).toBeDefined()
+    // Two lines before, two added and one removed
+    expect(await ui.find({ type: 'Text', text: /3 lines/ })).toBeDefined()
 
     runs.length = 0
     await ui.press({ key: 'open-1-0' })
@@ -224,4 +247,71 @@ test('shows an open button above the prompt only while the pane is closed', asyn
     expect(await ui.find({ key: 'open-changes' })).toBeUndefined()
     await ui.unmount()
   }
+})
+
+test('keeps the session turns in the store, for the latest five sessions', async ($, on) => {
+  const store = new Map<string, unknown>([1, 2, 3, 4, 5].map(no => [`history:old${no}`, []]))
+  world(on, [], [], [], true, [], store)
+
+  await editTurn($, 't1', 'D:/Beak/a.cs')
+  // The first turn's summary lands unawaited; the second turn's save comes after it
+  await editTurn($, 't2', 'D:/Beak/b.cs')
+
+  expect([...store.keys()]).toEqual(['history:old2', 'history:old3', 'history:old4', 'history:old5', 'history:s1'])
+  const saved = store.get('history:s1') as { summary?: string; files: { lines?: number }[] }[]
+  expect(saved.length).toBe(2)
+  expect(saved[0]?.summary).toBe('Replace two lines')
+  expect(saved[0]?.files[0]?.lines).toBe(3)
+})
+
+test('brings the turns back from the store when the app starts the session again', async ($, on) => {
+  const turn = {
+    id: 't9',
+    no: 4,
+    at: '10:00',
+    request: 'go',
+    summary: 'Saved before the restart',
+    files: [{ path: 'D:/Beak/a.cs', label: 'a.cs', added: 1, removed: 0, lines: 7, hunks: '@@ -1 +1,2 @@\n a\n+b\n' }],
+  }
+  world(on, [], [], [], true, [], new Map([['history:s1', [turn]]]))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: undefined }) as never)
+  on('ui.panes', () => ({ value: [] }) as never)
+  on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: '' }))
+
+  await $.session.start({ cwd: 'D:\\Beak', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: 'turn-diff', surface: 'desktop', component: 'Pane', requestId: 'turn-diff', props: PANE })
+  expect(await ui.find({ type: 'Text', text: /▾ Saved before the restart/, in: 't-4' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /7 lines/ })).toBeDefined()
+  await ui.unmount()
+
+  // The pane starts closed after a restart, so the band offers it
+  const band = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+  const above = await $.ui.mount({ plugin: 'turn-diff', surface: 'desktop', component: 'AbovePrompt', requestId: 'band', props: band as never })
+  expect(await above.find({ key: 'open-changes' })).toBeDefined()
+  await above.unmount()
+})
+
+test('a turn after a restart adds to the stored turns even without session.start', async ($, on) => {
+  const store = new Map<string, unknown>([['history:s1', [{ id: 't9', no: 4, at: '10:00', files: [] }]]])
+  world(on, [], [], [], true, [], store)
+
+  await editTurn($, 't1', 'D:/Beak/a.cs')
+
+  expect((store.get('history:s1') as { no: number }[]).map(turn => turn.no)).toEqual([4, 5])
+})
+
+test('still records the turn when the store fails', async ($, on) => {
+  const opened: string[] = []
+  class FullStore extends Map<string, unknown> {
+    override set(): never {
+      throw new Error('disk full')
+    }
+  }
+  world(on, [], opened, [], true, [], new FullStore())
+
+  await editTurn($, 't1', 'D:/Beak/a.cs')
+
+  expect(opened).toEqual(['turn-diff'])
 })
