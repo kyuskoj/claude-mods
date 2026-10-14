@@ -1,17 +1,12 @@
 {
   "name": "claude-mods",
   "owner": { "name": "Son" },
-  "description": "Claude Code mods: per-turn change cards and a wide plan pane.",
+  "description": "Claude Code mods: per-turn change cards.",
   "plugins": [
     {
       "name": "turn-diff",
       "source": "./turn-diff",
       "description": "Shows what the agent changed in each turn as summarized cards with expandable per-file diffs."
-    },
-    {
-      "name": "wide-plan",
-      "source": "./wide-plan",
-      "description": "Shows this session's plan-mode plan as Markdown in a wide pane."
     }
   ]
 }

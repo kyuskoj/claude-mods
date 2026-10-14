@@ -11,7 +11,7 @@ const MAX_TURNS = 10
 // The summary prompt gets the head of the final message, plus a short diff head per file when there is none
 const SUMMARY_ANSWER = 500
 const SUMMARY_HUNKS = 300
-// The plan-mode plan file is no project change; wide-plan shows it
+// The plan-mode plan file is no project change
 const PLAN_FILE = /[\\/]\.claude[\\/]plans[\\/][^\\/]+\.md$/i
 // $.state is gone once the app quits, so the store keeps each session's turns under this prefix, for the latest sessions
 const SAVED = 'history:'
@@ -125,8 +125,8 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // One press away from the pane while it is closed. Whatever the hooks beneath draw (wide-plan's button)
-  // goes on the same row, so the band stays one line whichever plugin runs first
+  // One press away from the pane while it is closed. Whatever the hooks beneath draw
+  // goes on the same row, so the band stays one line
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) {
       return next(e)

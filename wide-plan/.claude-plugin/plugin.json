@@ -1,7 +1,0 @@
-{
-  "name": "wide-plan",
-  "version": "0.1.4",
-  "description": "Shows this session's plan-mode plan as Markdown in a wide pane.",
-  "author": { "name": "Son" },
-  "types": "./types/index.d.ts"
-}
