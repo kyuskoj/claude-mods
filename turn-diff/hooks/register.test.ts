@@ -32,7 +32,7 @@ function world(
 
     return { value: { exitCode: 1, stdout: DIFF, stderr: '' } } as never
   })
-  on('env.get', ($, e) => ({ value: e.name === 'OS' ? 'Windows_NT' : 'C:/temp' }))
+  on('env.get', ($, e) => ({ value: ({ OS: 'Windows_NT', TEMP: 'C:/temp', USERPROFILE: 'C:\\Users\\me' } as Record<string, string>)[e.name] }))
   on('session.cwd', () => ({ value: 'D:\\Beak' }))
   on('clock.now', () => ({ value: 0 }))
   on('session.id', () => ({ value: 's1' }))
@@ -102,7 +102,7 @@ test('snapshots once per file and records the turn with counts, leaving the pane
 test('keeps one turn open at a time, the latest first', async ($, on) => {
   world(on, [], [])
 
-  await editTurn($, 't1', 'C:\\Temp\\scratch\\old.txt')
+  await editTurn($, 't1', 'D:\\Beak\\Old\\old.txt')
   await editTurn($, 't2', 'D:\\Beak\\new.cs')
 
   for (const surface of ['terminal', 'desktop'] as const) {
@@ -113,7 +113,7 @@ test('keeps one turn open at a time, the latest first', async ($, on) => {
 
     // Opening the older turn folds the latest
     await ui.pointer({ type: 'down', x: 30, y: 0, button: 'left', in: 't-1' })
-    expect(await ui.find({ type: 'Text', text: /…\/scratch\/old\.txt/, in: 'f-1-0' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Old\/old\.txt/, in: 'f-1-0' })).toBeDefined()
     expect(await ui.find({ key: 'f-2-0' })).toBeUndefined()
 
     // Pressing the open turn folds it, leaving none open
@@ -182,7 +182,7 @@ test('summarizes from the request and final message without the diff', async ($,
   const prompts: string[] = []
   world(on, [], [], prompts, false)
 
-  await editTurn($, 't1', 'D:\Beak\a.cs', 'Renamed the counter.')
+  await editTurn($, 't1', 'D:/Beak/a.cs', 'Renamed the counter.')
 
   expect(prompts[0]).toContain('User request:\nrename the counter\n')
   expect(prompts[0]).not.toContain('more detail')
@@ -199,7 +199,7 @@ test('falls back to the diff head when the turn has no final message', async ($,
   const prompts: string[] = []
   world(on, [], [], prompts)
 
-  await editTurn($, 't1', 'D:\Beak\a.cs')
+  await editTurn($, 't1', 'D:/Beak/a.cs')
 
   expect(prompts[0]).not.toContain("Assistant's final message")
   expect(prompts[0]).toContain('@@ -1,2 +1,3 @@')
@@ -214,6 +214,25 @@ test('leaves the plan-mode plan file out', async ($, on) => {
 
   const ui = await $.ui.mount({ plugin: 'turn-diff', surface: 'desktop', component: 'Pane', requestId: 'turn-diff', props: PANE })
   expect(await ui.find({ type: 'Text', text: /No changes recorded yet/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('leaves files outside the project and ~/.claude out, without reading them', async ($, on) => {
+  const reads: string[] = []
+  world(on, reads, [])
+
+  await editTurn($, 't1', 'C:\\Users\\me\\AppData\\Local\\Temp\\claude\\scratchpad\\notes.md')
+  await editTurn($, 't2', 'D:/Beakers/a.cs')
+  await editTurn($, 't3', 'd:\\beak\\Assets\\a.cs')
+  await editTurn($, 't4', 'C:\\Users\\me\\.claude\\CLAUDE.md')
+
+  expect(reads).toEqual(['d:\\beak\\Assets\\a.cs', 'C:\\Users\\me\\.claude\\CLAUDE.md'])
+
+  const ui = await $.ui.mount({ plugin: 'turn-diff', surface: 'desktop', component: 'Pane', requestId: 'turn-diff', props: PANE })
+  expect(await ui.find({ type: 'Text', text: /~\/\.claude\/CLAUDE\.md/, in: 'f-2-0' })).toBeDefined()
+  await ui.pointer({ type: 'down', x: 30, y: 0, button: 'left', in: 't-1' })
+  expect(await ui.find({ type: 'Text', text: /Assets\/a\.cs/, in: 'f-1-0' })).toBeDefined()
+  expect(await ui.find({ key: 't-3' })).toBeUndefined()
   await ui.unmount()
 })
 

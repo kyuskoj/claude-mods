@@ -17,13 +17,15 @@ const PLAN_FILE = /[\\/]\.claude[\\/]plans[\\/][^\\/]+\.md$/i
 const SAVED = 'history:'
 const MAX_SESSIONS = 5
 
+type Snapshot = { text: string | null; label: string }
+
 const history = atom({ plugin: 'turn-diff', key: 'history' } as const, [])
 const expanded = atom({ plugin: 'turn-diff', key: 'expanded' } as const, [])
 const openTurn = atom({ plugin: 'turn-diff', key: 'openTurn' } as const, null)
 
 export const register: Register = on => {
-  // Content just before the first touch this turn; null for a new file
-  let before = new Map<string, string | null>()
+  // Content just before the first touch this turn (null for a new file) and the name the pane shows
+  let before = new Map<string, Snapshot>()
   // The request that started this turn; keeps the summary in the user's language
   let request = ''
 
@@ -74,7 +76,11 @@ export const register: Register = on => {
     const path = editedPath(e)
 
     if (path !== undefined && !before.has(path)) {
-      before.set(path, await $.fs.read(path).catch(() => null))
+      const label = await fileLabel($, path)
+
+      if (label !== undefined) {
+        before.set(path, { text: await $.fs.read(path).catch(() => null), label })
+      }
     }
 
     return next(e)
@@ -359,14 +365,27 @@ function editedPath(e: ToolCallInput): string | undefined {
   return undefined
 }
 
-function shortPath(path: string, cwd: string): string {
-  const normal = path.replace(/\\/g, '/')
+// The path relative to the project, `~/.claude/…` for Claude's own settings and memory,
+// or undefined for a file that is no change to either (the scratchpad)
+async function fileLabel($: EngineInterface, path: string): Promise<string | undefined> {
+  const inProject = relativePath(path, await $.session.cwd())
 
-  if (normal.toLowerCase().startsWith(`${cwd.toLowerCase()}/`)) {
-    return normal.slice(cwd.length + 1)
+  if (inProject !== undefined) {
+    return inProject
   }
 
-  return `…/${normal.split('/').slice(-2).join('/')}`
+  const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME'))
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? (home !== undefined ? `${home}/.claude` : undefined)
+  const inConfig = config !== undefined ? relativePath(path, config) : undefined
+
+  return inConfig !== undefined ? `~/.claude/${inConfig}` : undefined
+}
+
+function relativePath(path: string, folder: string): string | undefined {
+  const normal = path.replace(/\\/g, '/')
+  const root = folder.replace(/\\/g, '/').replace(/\/$/, '')
+
+  return normal.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? normal.slice(root.length + 1) : undefined
 }
 
 // Counts lines the way git does: a last line without a newline still counts
@@ -374,13 +393,12 @@ function lineCount(text: string): number {
   return text === '' ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
 }
 
-async function diffAll($: EngineInterface, touched: Map<string, string | null>): Promise<TurnFile[]> {
-  const cwd = (await $.session.cwd()).replace(/\\/g, '/')
+async function diffAll($: EngineInterface, touched: Map<string, Snapshot>): Promise<TurnFile[]> {
   const temp = (await $.env.get('TEMP')) ?? (await $.env.get('TMPDIR')) ?? '/tmp'
   const beforePath = `${temp}/claude-turn-diff/before`
   const changed: TurnFile[] = []
 
-  for (const [path, text] of touched) {
+  for (const [path, { text, label }] of touched) {
     await $.fs.write(beforePath, text ?? '')
     // Exits 1 on a difference, 0 on none; anything else is a failure
     const run = await $.process.run(['git', 'diff', '--no-index', '--no-color', '--no-ext-diff', '-U3', beforePath, path])
@@ -396,7 +414,7 @@ async function diffAll($: EngineInterface, touched: Map<string, string | null>):
 
     changed.push({
       path,
-      label: shortPath(path, cwd),
+      label,
       added,
       removed,
       // From the snapshot and the diff, so the file is not read again
