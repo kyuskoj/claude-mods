@@ -1,0 +1,9 @@
+{
+  "name": "scripts-diff",
+  "version": "0.4.0",
+  "description": "Shows the git diff of the files the agent touched this session, grouped by file type with per-type totals, updated live.",
+  "author": {
+    "name": "Son"
+  },
+  "types": "./types/index.d.ts"
+}
